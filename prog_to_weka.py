@@ -27,12 +27,17 @@ class DataProcessor(object):
 		self.dataset_path = config['progsnap_dir']
 		self.out_dir = config['out_dir']
 		self.arff_fid = config['arff_fid']
+		self.rehearse_an = config['rehearse_an']
 		
 		self.students = {}
 		self.an_ts = {}  # assignment number timestamps 
 		self.an_cutoffs = {}
 		self.la_labels = [] # TODO make consistent la -> an
 		self.out_suff = []
+
+		# The int dedicated to represent nulls, 
+		# needed because the arff module doesnt supprt nulls :(
+		self.null_int = -1 
 		
 		if self.arff_fid:
 			self.load_arff()
@@ -58,29 +63,64 @@ class DataProcessor(object):
 				del stats[bk]
 			self.students[sn] = stats
 
-	def filter_attr( self , regex_list, mode='white'):
-		print('filter by {}list'.format(mode), regex_list )
+	def compile_regexes( self, regexes ):
+		# if given a list, return a list of attributes matching the regexes
+		# if given a dict, return a dict with attrs as keys matching the regexes
 		students = self.students
 		sn_0 = list(students.keys())[0]
 		curr_attr = list(students[sn_0].keys())
 
 		# compile regexes
-		attr_list = []
-		for r in regex_list:
+		is_list = type( regexes ) == list
+		compiled = [] if is_list else {}
+		for r in regexes:
 			for attr in curr_attr:
 				if re.match(r+'\Z', attr):
-					attr_list += [attr]
+					if is_list: compiled += [attr]
+					else: compiled[attr] = regexes[r]
+
+		return compiled 
+
+	def filter_students_by_attr( self, regex_dict ):
+		# filter students if the k matches v in regerx_dict
+		print("filter students by attributes:")
+		print(regex_dict)
+		self.out_suff += ['_filtered']
+		students = self.students
+		attr_dict = self.compile_regexes( regex_dict ) 
+		# Flag for removal
+		to_be_removed = []
+		for sn in students:
+			for attr in attr_dict:
+				if eval(str(students[sn][attr])+attr_dict[attr]):
+					to_be_removed += [sn]
+
+		for sn in to_be_removed:
+			del students[sn]
+
+	def get_curr_attr( self ):
+		# return a list of the attributes held by students
+		students = self.students
+		sn_0 = list(students.keys())[0]
+		return list(students[sn_0].keys())
+
+
+	def filter_attr( self , regex_list, mode='white'):
+		print('filter attributes by {}list:'.format(mode))
+		print( regex_list )
+
+		self.out_suff += ['_filtered']
+		students = self.students
+		curr_attr = self.get_curr_attr() 
+		attr_list = self.compile_regexes( regex_list )
 
 		not_white = [ e for e in curr_attr if e not in attr_list ]
 		for sn in students:
-			if mode == 'black':
-				for attr in attr_list:
-					if attr in students[sn]:
-						del students[sn][attr]
-			elif mode ==  'white':
-				for attr in not_white:
-					if attr in students[sn]:
-						del students[sn][attr]
+			if mode == 'black': filter_list = attr_list 
+			elif mode ==  'white': filter_list = not_white
+			for attr in filter_list:
+				if attr in students[sn]:
+					del students[sn][attr]
 
 	def filter_by_date( self, cutoff ):
 		self.out_suff += ['_filtered']
@@ -105,6 +145,26 @@ class DataProcessor(object):
 						del students[sn][la]
 
 	def process(self):
+		# Classify
+		students = self.students
+		for sn in students:
+			for tag in ['course','exm']:
+				if tag not in students[sn]: students[sn][tag] = 0
+				passed = students[sn][tag] > self.fail_threshold 
+				students[sn][tag+'_class'] = 1 if passed else 0
+
+			students[sn]['is_online'] = 0
+			for attr in students[sn]:
+				# classify rehearse students 
+				if 'la' in attr:
+					try:
+						an = int(attr[2:attr.index('_')])
+						is_online = an in self.rehearse_an
+						if is_online and int(students[sn][attr]) != self.null_int:
+							students[sn]['is_online'] = 1
+							break;
+					except: pass
+
 		# Build assignment labels
 		if not self.la_labels:
 			for attr in self.students[list(self.students.keys())[0]]:
@@ -122,10 +182,8 @@ class DataProcessor(object):
 
 		# Determine Assingment cutoffs
 		for an in self.an_ts:
-			non_zero_ts = [ e for e in self.an_ts[an] if e != 0 ]
-			self.an_cutoffs[an] = sum(non_zero_ts)/len(non_zero_ts)
-
-		self.show_an_cutoffs()
+			non_null_ts = [ e for e in self.an_ts[an] if e != -1 ]
+			self.an_cutoffs[an] = sum(non_null_ts)/len(non_null_ts)
 
 	def show_an_cutoffs(self):
 		# Sort Assginments by date
@@ -156,8 +214,6 @@ class DataProcessor(object):
 			if is_empty: score = 0
 			else: score = float(row[grade]) / float(self.totals[grade])
 			students[sid][grade] = float(score)
-		passed = students[sid]['course'] > self.fail_threshold 
-		students[sid]['pass_class'] = 1 if passed else 0
 
 	def load_grades(self):
 		with open(self.totals_fid, 'r') as csv_file:
@@ -225,9 +281,8 @@ class DataProcessor(object):
 
 	def to_arff(self):
 		students = self.students
-		sn = list(students.keys())[0]
-		an = list(students[sn].keys())[0]
-		row_headers = [h for h in students[sn]]
+		sn_0 = list(students.keys())[0]
+		row_headers = [h for h in students[sn_0]]
 		row_headers.sort()
 		is_filtered = len(self.out_suff) != 0
 		headers = [] if is_filtered else ['student_num']
@@ -235,21 +290,19 @@ class DataProcessor(object):
 
 		# add null cols
 		data = []
+		file_headers = headers if is_filtered else row_headers
 		for sn in students:
 			row = [] if is_filtered else [sn]
-			for h in headers[1:]:
+			for h in file_headers:
 				if h not in students[sn]:
 					# convert these to ? in arff, this will fuck things up
-					#students[sn][h] = '<NULL>' 
-					students[sn][h] = 0 
+					if is_filtered: students[sn][h] = '<NULL>' 
+					else: students[sn][h] = self.null_int
 				row += [students[sn][h]]
 			data += [row]
 
 		out_fid = "features"
-		for suff in self.out_suff:
-			out_fid += suff
-		if is_filtered:
-			out_fid = "filtered"
+		if is_filtered: out_fid = "filtered"
 
 		out_path = "{}/{}.arff".format(self.out_dir, out_fid)
 		arff.dump( out_path, data, relation="pcrs", names = headers)
@@ -279,13 +332,23 @@ if __name__ == '__main__':
 			'progsnap_dir':'progsnap_data',
 			'fail_threshold':0.5,
 			'n_assignments':None,  # None for all
-			}
+			'rehearse_an':[87,131,43,88,92], # an of rehearse assignments
+			'prepare_an':[],
+			'perform_an':[82,55,49,54,48,41,47,35,36,37,45,39,59,64,56,62,42,61,63,57,58,91,67],
+		}
 
 	dp = DataProcessor( config )
+	
+	# Filter out Students
+	#dp.show_an_cutoffs()
+	#dp.filter_students_by_attr({'is_online':'==0'})
 
+	# Filter out attributes
 	#dp.filter_by_date( 1444310413490 ) # Oct 7 ->6 assngmnts
-	dp.filter_by_date( 1444510413490 )
-	dp.filter_attr(['a1','la.*','pass_class'])
+	perform_regexes = ['.*'+str(an)+'.*' for an in config['perform_an']]
+	#dp.filter_attr(['course_class']+perform_regexes)
+	dp.filter_attr(['course_class','la.*','a1'])
+	#dp.filter_attr(['is_online','la.*_s','la.*_c','exm','exm_class','course_class','course'])
+	#dp.filter_attr(['la.*','exm','exm_class','course_class','course'])
 
 	dp.to_arff()
-
