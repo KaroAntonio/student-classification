@@ -5,7 +5,7 @@ to a weka readable format
 '''
 
 import sys, os
-import arff, csv
+import arff, csv, json
 import re
 # import traceback
 import subprocess
@@ -28,6 +28,7 @@ class DataProcessor(object):
 		self.out_dir = config['out_dir']
 		self.arff_fid = config['arff_fid']
 		self.rehearse_an = config['rehearse_an']
+		self.nominal = False if 'nominal' not in config else config['nominal']
 		
 		self.students = {}
 		self.an_ts = {}  # assignment number timestamps 
@@ -35,10 +36,8 @@ class DataProcessor(object):
 		self.la_labels = [] # TODO make consistent la -> an
 		self.out_suff = []
 
-		# The int dedicated to represent nulls, 
-		# needed because the arff module doesnt supprt nulls :(
-		self.null_int = -1 
-		
+		self.batch_ptr = 0
+
 		if self.arff_fid:
 			self.load_arff()
 		else:
@@ -148,10 +147,13 @@ class DataProcessor(object):
 		# Classify
 		students = self.students
 		for sn in students:
-			for tag in ['course','exm']:
+			for tag in ['course','exm','tst']:
 				if tag not in students[sn]: students[sn][tag] = 0
 				passed = students[sn][tag] > self.fail_threshold 
-				students[sn][tag+'_class'] = 1 if passed else 0
+				if self.nominal:
+					students[sn][tag+'_class'] = True if passed else False
+				else:
+					students[sn][tag+'_class'] = 1 if passed else 0
 
 			students[sn]['is_online'] = 0
 			for attr in students[sn]:
@@ -279,7 +281,29 @@ class DataProcessor(object):
 			print('loading assignment ' + a.number())
 			self.load_assignment(dataset, a)
 
+	def to_xy(self,y_feat,out_path):
+		'''
+		y_feat = the feature to use as the class vec
+		Return students data as x,y vectors
+		x: features
+		y: class
+		'''
+		x = []
+		y = []
+		for sid in self.students:
+			f = self.students[sid]
+			feat_vec = [f[k] for k in f]
+			class_vec = [1,0] if f[y_feat] else [0,1]
+			x += [feat_vec] 
+			y += [class_vec]
+
+		with open(out_path,'w') as f:
+			json.dump({'x':x,'y':y}, f)
+		
 	def to_arff(self):
+		'''
+		Save students data to arff file to be used by weka
+		'''
 		students = self.students
 		sn_0 = list(students.keys())[0]
 		row_headers = [h for h in students[sn_0]]
@@ -321,23 +345,27 @@ class DataProcessor(object):
 			print('Usage: prog_to_weka <dataset_path> <output_dir>')
 			exit(0)
 		return sys.argv[1], sys.argv[2]
-		
-if __name__ == '__main__':
-	config = {
-			'grades_fid':'grades.csv',
-			'totals_fid':'totals.csv',
+
+def get_config():
+	# central config
+	return {
+			'grades_fid':'data/grades.csv',
+			'totals_fid':'data/totals.csv',
 			'arff_fid':'out/features.arff',    # None to load from progsnap
 			#'arff_fid':None,    # None to load from progsnap
 			'out_dir':'out',
-			'progsnap_dir':'progsnap_data',
+			'progsnap_dir':'data/progsnap_data',
 			'fail_threshold':0.5,
 			'n_assignments':None,  # None for all
 			'rehearse_an':[87,131,43,88,92], # an of rehearse assignments
 			'prepare_an':[],
 			'perform_an':[82,55,49,54,48,41,47,35,36,37,45,39,59,64,56,62,42,61,63,57,58,91,67],
+			'nominal':True,
 		}
 
-	dp = DataProcessor( config )
+
+if __name__ == '__main__':
+	dp = DataProcessor( get_config() )
 	
 	# Filter out Students
 	#dp.show_an_cutoffs()
@@ -345,10 +373,13 @@ if __name__ == '__main__':
 
 	# Filter out attributes
 	#dp.filter_by_date( 1444310413490 ) # Oct 7 ->6 assngmnts
-	perform_regexes = ['.*'+str(an)+'.*' for an in config['perform_an']]
+	#dp.filter_by_date( 1444310413490 ) # Oct 7 ->6 assngmnts
+	#perform_regexes = ['.*'+str(an)+'.*' for an in config['perform_an']]
 	#dp.filter_attr(['course_class']+perform_regexes)
-	dp.filter_attr(['course_class','la.*','a1'])
+	dp.filter_attr(['exm_class','course_class','la.*_c','la.*_s'])
 	#dp.filter_attr(['is_online','la.*_s','la.*_c','exm','exm_class','course_class','course'])
 	#dp.filter_attr(['la.*','exm','exm_class','course_class','course'])
 
 	dp.to_arff()
+
+

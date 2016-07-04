@@ -4,3 +4,6 @@ reproducing jadud et al's machine learning student classification study with dat
 
 ## **Of Interest**  
 A script to convert progsnap to .arff
+
+## Multilayer Perceptron
+[credit](https://github.com/aymericdamien/TensorFlow-Examples/blob/master/examples/3_NeuralNetworks/multilayer_perceptron.py)
