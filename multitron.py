@@ -5,7 +5,7 @@ import json
 class BatchLoader:
 	def __init__(self, x, y):
 		self.batch_size = batch_size = 30 
-		train_ratio = 0.7 # ration of batches dedicated to training
+		train_ratio = 0.9 # ration of batches dedicated to training
 		self.train_ptr, self.test_ptr = [-1], [-1]
 
 		self.num_batches = num_batches = len(x)//batch_size
@@ -41,11 +41,11 @@ bl = BatchLoader(data['x'], data['y'])
 learning_rate = 0.001
 training_epochs = 50
 batch_size = bl.batch_size
-display_step = 1
+display_step = 2
 
 # Network Parameters
-n_hidden_1 = 50 # 1st layer number of features
-n_hidden_2 = 50 # 2nd layer number of features
+n_hidden_1 = 200 # 1st layer number of features
+n_hidden_2 = 200 # 2nd layer number of features
 n_input = len(data['x'][0]) # MNIST data input (img shape: 28*28)
 n_classes = 2 # MNIST total classes (0-9 digits)
 
@@ -61,19 +61,24 @@ def multilayer_perceptron(x, weights, biases):
     # Hidden layer with RELU activation
     layer_2 = tf.add(tf.matmul(layer_1, weights['h2']), biases['b2'])
     layer_2 = tf.nn.relu(layer_2)
+    # Hidden layer with RELU activation
+    layer_3 = tf.add(tf.matmul(layer_2, weights['h3']), biases['b3'])
+    layer_3 = tf.nn.relu(layer_3)
     # Output layer with linear activation
-    out_layer = tf.matmul(layer_2, weights['out']) + biases['out']
+    out_layer = tf.matmul(layer_1, weights['out']) + biases['out']
     return out_layer
 
 # Store layers weight & bias
 weights = {
     'h1': tf.Variable(tf.random_normal([n_input, n_hidden_1])),
     'h2': tf.Variable(tf.random_normal([n_hidden_1, n_hidden_2])),
+    'h3': tf.Variable(tf.random_normal([n_hidden_1, n_hidden_2])),
     'out': tf.Variable(tf.random_normal([n_hidden_2, n_classes]))
 }
 biases = {
     'b1': tf.Variable(tf.random_normal([n_hidden_1])),
     'b2': tf.Variable(tf.random_normal([n_hidden_2])),
+    'b3': tf.Variable(tf.random_normal([n_hidden_2])),
     'out': tf.Variable(tf.random_normal([n_classes]))
 }
 
@@ -104,16 +109,23 @@ with tf.Session() as sess:
 			avg_cost += c / bl.num_batches
 		# Display logs per epoch step
 		if epoch % display_step == 0:
-			print "Epoch:", '%04d' % (epoch+1), "cost: ", \
-				"{:.9f}".format(avg_cost)
+			# Test model
+			correct_prediction = tf.equal(tf.argmax(pred, 1), tf.argmax(y, 1))
+			# Calculate accuracy
+			accuracy = tf.reduce_mean(tf.cast(correct_prediction, "float"))
+			batch_x, batch_y = bl.next_test()
+			acc = accuracy.eval({x: batch_x, y: batch_y})
 
-		# Test model
-		correct_prediction = tf.equal(tf.argmax(pred, 1), tf.argmax(y, 1))
-		# Calculate accuracy
-		accuracy = tf.reduce_mean(tf.cast(correct_prediction, "float"))
-		batch_x, batch_y = bl.next_test()
-		print "Accuracy:", accuracy.eval({x: batch_x, y: batch_y})
+			print "Epoch:", '%04d' % (epoch+1), "cost: ", \
+					"{:.9f}, accuracy: {:.9f}".format(avg_cost, acc)
 
 	print "Optimization Finished!"
-
+	
+	total_accuracy = 0
+	correct_prediction = tf.equal(tf.argmax(pred, 1), tf.argmax(y, 1))
+	accuracy = tf.reduce_mean(tf.cast(correct_prediction, "float"))
+	for i in range(len(bl.test_x)):
+		batch_x, batch_y = bl.next_test()
+		total_accuracy += accuracy.eval({x: batch_x, y: batch_y})
+	print("Final Accuracy: {}".format(total_accuracy / len(bl.test_x)) )
 
