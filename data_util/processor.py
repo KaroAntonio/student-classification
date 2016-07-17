@@ -17,16 +17,16 @@ from docopt import docopt
 
 class DataProcessor(object):
 
-	def __init__(self, config ):
+	def __init__(self, config={} ):
 
 		# Load Config
-		self.n_assignments = config['n_assignments'] 
-		self.grades_fid = config['grades_fid']
-		self.totals_fid = config['totals_fid']
-		self.dataset_path = config['progsnap_dir']
-		self.out_dir = config['out_dir']
-		self.arff_fid = config['arff_fid']
-		self.rehearse_an = config['rehearse_an']
+		self.load_config( config )
+
+		# assigment numbers
+		# TODO move this to an external file
+		self.prepare_an = []
+		self.rehearse_an = [87,131,43,88,92]
+		self.perform_an = [82,55,49,54,48,41,47,35,36,37,45,39,59,64,56,62,42,61,63,57,58,91,67]
 		
 		self.students = {}
 		self.an_ts = {}  # assignment number timestamps 
@@ -35,6 +35,7 @@ class DataProcessor(object):
 		self.out_suff = []
 
 		self.batch_ptr = 0
+		self.null_int = -1
 
 		if self.arff_fid:
 			self.load_arff()
@@ -43,6 +44,33 @@ class DataProcessor(object):
 			self.load_grades()
 
 		self.process()
+
+	def load_config(self, config ):
+		'''
+		LOAD data config
+		use defaults as needed
+		'''
+		# TODO ... is this a good place to put this?
+		defaults = {
+            'grades_fid':'data/grades.csv',
+            'totals_fid':'data/totals.csv',
+            'arff_fid':'out/features.arff',    # None to load from progsnap
+            'out_dir':'out',
+            'progsnap_dir':'data/progsnap_data',
+            'n_assignments':None,  # None for all
+            }
+		
+		# replace defaults with given config
+		for k in config:
+			if k not in defaults:
+				raise Exception("{} not valid config.".format(k))
+			defaults[k] = config[k]
+		
+		# instantiate class params
+		for k in defaults:
+			val = defaults[k]
+			val = '"{}"'.format(val) if type(val) == str else val
+			exec('self.{} = {}'.format(k,val))
 
 	def load_arff(self):
 		print("Loading from arff")
@@ -147,8 +175,10 @@ class DataProcessor(object):
 			conditions_met = True
 			stud = self.students[sn]
 			for c in conds:
-				if not eval(str(stud[cond_tag])+c):
-					conditions_met = False
+				if cond_tag in stud:
+					if not eval(str(stud[cond_tag])+c):
+						conditions_met = False
+				else: conditions_met = False
 			if conditions_met: stud[cond_tag+'_class'] = val
 
 	def classify_thresh(self,tag,sn, thresh, label):
@@ -209,9 +239,9 @@ class DataProcessor(object):
 
 	def load_progsnap(self):
 		print("\tfrom progsnap")
-		subdirs = get_immediate_subdirectories(self.dataset_path)
+		subdirs = get_immediate_subdirectories(self.progsnap_dir)
 		for sd in subdirs[:self.n_assignments]:
-			self.load_subdir(self.dataset_path + '/' + sd)
+			self.load_subdir(self.progsnap_dir + '/' + sd)
 
 	def add_grades_to_student(self, row):
 		# all scores are out of 1
@@ -244,12 +274,28 @@ class DataProcessor(object):
 		if an in self.an_ts: self.an_ts[an] += [ts]
 		else: self.an_ts[an] = [ts]
 
+	def track_reps(self, reps, stat): 
+		if stat not in reps:
+			reps[stat] = {}
+			reps[stat]['max'] = float('-inf')
+			reps[stat]['curr'] = 0
+
+		if stat in reps['last']:
+			reps[stat]['curr'] += 1
+			if reps[stat]['curr'] > reps[stat]['max']:
+				reps[stat]['max'] = reps[stat]['curr']
+		else: reps[stat]['curr'] = 0
+
+
 	def load_work_history(self, wh):
 		num_evts = 0
 		features = {}
 		sn = wh.student_num()
 		an = wh.assign_num()
 		max_ts = 0
+		reps = {'last':None} # a dict of repeated statuses
+		last = {}  # a dict of if the last event was repeated
+
 		for evt in wh.events():
 			num_evts += 1
 			if evt.has("snapids"):
@@ -265,16 +311,32 @@ class DataProcessor(object):
 						features[status] += 1
 					else: features[status] = 0
 
-		#features['steps'] = sum([ features[s] for s in self.status_types ])
+					if reps['last']:
+						self.track_reps( reps, status )
+
+				reps['last'] = tr.statuses()
 
 		if sn not in self.students: self.students[sn] = {}
-		
 		# stats for each lab assignment
 		label_stats = { 
 				'la{}_s':num_evts, 
 				'la{}_c':features['correctness'],
-				'la{}_ts':max_ts
+				'la{}_ts':max_ts,
+				'la{}_np':features['passed'] if 'passed' in features else -1, # num passed events
 				}
+
+		status_tags = {
+				'failed':'nrf', # num repeated failed
+				'passed':'nrp',
+				'exception':'nre'
+				}
+
+		# record the stats for the repeated statuses encountered
+		for stat in status_tags:
+			if stat in reps:
+				m = reps[stat]['max']
+				val = m if m  != float('-inf') else 0
+				label_stats['la{}_'+status_tags[stat]] = val
 
 		for label in label_stats:
 			self.students[sn][label.format(str(an))] = label_stats[label]
@@ -309,7 +371,7 @@ class DataProcessor(object):
 		with open(out_path,'w') as f:
 			json.dump({'x':x,'y':y}, f)
 		
-	def to_arff(self):
+	def to_arff(self, fid=None):
 		'''
 		Save students data to arff file to be used by weka
 		'''
@@ -336,6 +398,7 @@ class DataProcessor(object):
 
 		out_fid = "features"
 		if is_filtered: out_fid = "filtered"
+		if fid: out_fid = fid
 
 		out_path = "{}/{}.arff".format(self.out_dir, out_fid)
 		arff.dump( out_path, data, relation="pcrs", names = headers)
@@ -354,4 +417,5 @@ class DataProcessor(object):
 			print('Usage: prog_to_weka <dataset_path> <output_dir>')
 			exit(0)
 		return sys.argv[1], sys.argv[2]
+
 

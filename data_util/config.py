@@ -15,6 +15,7 @@ def load_configs_from_csv(fid):
 
 def get_config():
 	# central config
+	# move this to default in constructor
 	data_conf = {
             'grades_fid':'data/grades.csv',
             'totals_fid':'data/totals.csv',
