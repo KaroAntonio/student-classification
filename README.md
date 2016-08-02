@@ -10,6 +10,10 @@ reproducing jadud et al's machine learning student classification study with dat
 
 ### **Data Processing** 
 
+Set dataset name in 
+
+	data_util/dataset_name.txt
+
 To do the primary import from progsnap:  
 
 	./1_build_features
@@ -21,6 +25,8 @@ data_util.processor.DataProcessor converts progsnap to .arff and manipulate, fil
 Progsnap features are also convertable to vector format
 
 *See convert_data.py for use of DataProcessor* 
+
+*NOTE: code_data.csv has been truncated to exclude code for size 
 
 ### Multilayer Perceptron
 
