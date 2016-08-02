@@ -1,0 +1,4 @@
+grades_fid,totals_fid,arff_fid,out_dir,progsnap_dir,n_assignments
+data/grades.csv,data/totals.csv,out/features.arff,out,data/progsnap_data,None
+
+
