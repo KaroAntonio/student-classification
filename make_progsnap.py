@@ -29,11 +29,16 @@ Submission = namedtuple('Submission', 'submit_id user_id problem_id timestamp su
 
 def read_codedata(code_fname):
     problems = []
+    num_failed = 0
     with open(code_fname) as code_f:
         code_f.readline()
         code_r = csv.reader(code_f, delimiter=',', quotechar='"')
         for entry in code_r:
-            problems.append(Submission(*entry))
+            try:
+                problems.append(Submission(*entry))
+            except:
+                num_failed += 1
+    print("Number of entries failed to read {}.".format(num_failed))
     return problems
 
 

@@ -1,0 +1,12 @@
+make groups equal size
+PCA / feature selection
+investigate features, make sure they are used
+binning students
+ TODO confusion matrix
+what is the distribution of the original data
+follow up for additional data for validating generalizeability 
+
+IF NN are not good for this type of data, what is?
+
+why is it not good?
+

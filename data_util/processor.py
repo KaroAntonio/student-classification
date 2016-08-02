@@ -4,7 +4,7 @@ supplemented with student grade data
 to a weka readable format
 '''
 
-import sys, os
+import sys, os, random
 import arff, csv, json
 import re
 # import traceback
@@ -14,6 +14,14 @@ from datetime import datetime as dt
 import progsnap
 from helpers import *
 from docopt import docopt
+
+def get_dataset_name(fid='data_util/dataset_name.txt'):
+	'''
+	get the dataset name from wherever she happens to be
+	'''
+	with open( fid ,'r') as f:
+		return f.readline().strip()
+
 
 class DataProcessor(object):
 
@@ -33,6 +41,7 @@ class DataProcessor(object):
 		self.an_cutoffs = {}
 		self.la_labels = [] # TODO make consistent la -> an
 		self.out_suff = []
+		self.classes = {} # keep track of classifications
 
 		self.batch_ptr = 0
 		self.null_int = -1
@@ -50,14 +59,17 @@ class DataProcessor(object):
 		LOAD data config
 		use defaults as needed
 		'''
+		dataset_name = get_dataset_name()
 		# TODO ... is this a good place to put this?
 		defaults = {
-            'grades_fid':'data/grades.csv',
-            'totals_fid':'data/totals.csv',
-            'arff_fid':'out/features.arff',    # None to load from progsnap
+			'dataset_name':dataset_name,
+            'grades_fid':'data/'+dataset_name+'/grades.csv',
+            'totals_fid':'data/'+dataset_name+'/totals.csv',
+            'arff_fid': None,   # None to load from progsnap
             'out_dir':'out',
-            'progsnap_dir':'data/progsnap_data',
+            'progsnap_dir':'data/'+dataset_name+'/progsnap_data',
             'n_assignments':None,  # None for all
+			'verbose':True,
             }
 		
 		# replace defaults with given config
@@ -73,7 +85,8 @@ class DataProcessor(object):
 			exec('self.{} = {}'.format(k,val))
 
 	def load_arff(self):
-		print("Loading from arff")
+		if self.verbose: 
+			print("Loading from arff")
 		for row in list(arff.load(self.arff_fid)):
 			stats = row._data
 			sn = stats['student_num']
@@ -108,8 +121,9 @@ class DataProcessor(object):
 
 	def filter_students_by_attr( self, regex_dict ):
 		# filter students if the k matches v in regerx_dict
-		print("filter students by attributes:")
-		print(regex_dict)
+		if self.verbose: 
+			print("filter students by attributes:")
+			print(regex_dict)
 		self.out_suff += ['_filtered']
 		students = self.students
 		attr_dict = self.compile_regexes( regex_dict ) 
@@ -131,8 +145,9 @@ class DataProcessor(object):
 
 
 	def filter_attr( self , regex_list, mode='white'):
-		print('filter attributes by {}list:'.format(mode))
-		print( regex_list )
+		if self.verbose: 
+			print('filter attributes by {}list:'.format(mode))
+			print( regex_list )
 
 		self.out_suff += ['_filtered']
 		students = self.students
@@ -159,8 +174,9 @@ class DataProcessor(object):
 		n_f = str(len(filtered))
 		n_k = str(len(an_cuts)-len(filtered))
 
-		print("filter by date "+str(dt.fromtimestamp( cutoff/1e3 )))
-		print("\t"+n_f +" filtered, "+n_k+" kept")
+		if self.verbose: 
+			print("filter by date "+str(dt.fromtimestamp( cutoff/1e3 )))
+			print("\t"+n_f +" filtered, "+n_k+" kept")
 
 		for an in filtered:
 			for sn in students:
@@ -171,6 +187,10 @@ class DataProcessor(object):
 
 	def classify(self, val, cond_tag, conds):
 		# classify student[class] as val if conds conditions on cond_tag are met
+		if (cond_tag+"_class" not in self.classes):
+			self.classes[cond_tag+"_class"] = []
+		self.classes[cond_tag+"_class"] += [val]
+
 		for sn in self.students:
 			conditions_met = True
 			stud = self.students[sn]
@@ -228,17 +248,21 @@ class DataProcessor(object):
 
 	def show_an_cutoffs(self):
 		# Sort Assginments by date
+
 		print("-"*10)
 		print(" Assignment Cutoff Dates ")
 		cuts = [(k,self.an_cutoffs[k]) for k in self.an_cutoffs]
 		cuts = sorted(cuts , key=lambda x: x[1])
+
 		for cut in cuts:
 			print(cut[0], dt.fromtimestamp(cut[1]/1e3))
 		print("-"*10)
 
 
 	def load_progsnap(self):
-		print("\tfrom progsnap")
+
+		if self.verbose: 
+			print("\tfrom progsnap")
 		subdirs = get_immediate_subdirectories(self.progsnap_dir)
 		for sd in subdirs[:self.n_assignments]:
 			self.load_subdir(self.progsnap_dir + '/' + sd)
@@ -349,8 +373,99 @@ class DataProcessor(object):
 	def load_subdir(self, snap_path):
 		dataset = progsnap.Dataset(snap_path, sortworkhistory=True)
 		for a in dataset.assignments():
-			print('loading assignment ' + a.number())
+			if self.verbose: 
+				print('loading assignment ' + a.number())
 			self.load_assignment(dataset, a)
+
+	def equalize_by_class(self, c):
+		'''
+		c: the class to equalize by
+		filter out data points such that data is distributed equally by class
+		'''
+		fk = list(self.students[list(self.students)[0]])  # feature keys
+		if c not in fk:
+			raise Exception("Class: {}, is not in data".format(c))
+
+		# SORT members for each class value
+		subsets = {} 
+		for sid in self.students:
+			f = self.students[sid]
+			if f[c] not in subsets: subsets[f[c]] = []
+			subsets[f[c]] += [sid]
+	
+		min_count = float("inf")
+		for v in subsets: 
+			if len(subsets[v]) < min_count:
+				min_count = len(subsets[v])
+		
+		equalized = {}
+		for v in subsets:
+			random.shuffle(subsets[v])
+			for sid in subsets[v][:min_count]:
+				equalized[sid] = self.students[sid]
+		if self.verbose:
+			print("Equalized by class {}, {} kept per class.".format(c, min_count))
+		n_filtered = len(self.students) - len(equalized)
+		n_kept = len(equalized)
+		if self.verbose:
+			print("\t{} filtered, {} kept total.".format(n_filtered, n_kept))
+
+		self.students = equalized
+	
+	def get_ranges(self):
+		'''
+		return a dict of ranges for all keys
+		{'feature_label':[min,max]}
+		'''
+		ranges = {}
+		for sid in self.students:
+			f = self.students[sid] 
+			for k in f:
+				if k not in ranges: ranges[k] = [float("inf"),float("-inf")]
+				# track min
+				if f[k] < ranges[k][0]: ranges[k][0] = f[k]
+				# track max
+				if f[k] > ranges[k][1]: ranges[k][1] = f[k]
+
+		return ranges
+
+	def scale(self, x, r):
+		'''
+		x: value to be scaled
+		r: [min, max] range to be scaled to
+		return scaled value of x
+		'''
+		return float(x - r[0]) / (r[1] - r[0])
+
+	def filter_null(self, keys = None):
+		'''
+		filter all students with any null data points
+		keys: [list of attributes to check for null]
+				check all if None
+		'''
+		filtered = []
+
+		# mark students for filtering
+		for sid in self.students:
+			feats = self.students[sid]
+			for label in feats:
+				feat = feats[label]
+				if not keys or label in keys:
+					if feat == -1:
+						filtered += [sid]
+
+		# CREATE subset of unfiltered students		
+		unfiltered = {}
+		for sid in self.students:
+			if sid not in filtered:
+				unfiltered[sid] = self.students[sid]
+
+		keys_info = 'All' if not keys else keys
+		if self.verbose:
+			print('filter null students for {},'.format(keys_info))
+			print('\t{} filtered, {} kept'.format(len(filtered), len(unfiltered)))
+
+		self.students = unfiltered
 
 	def to_xy(self,y_feat,out_path):
 		'''
@@ -361,10 +476,21 @@ class DataProcessor(object):
 		'''
 		x = []
 		y = []
+		# a single set of keys to maintain order
+		keys = self.students[list(self.students)[0]].keys() 
+
+		ranges = self.get_ranges()
+		n_classes = len(self.classes[y_feat])
+
 		for sid in self.students:
-			f = self.students[sid]
-			feat_vec = [f[k] for k in f if k != y_feat]
-			class_vec = [1,0] if f[y_feat] else [0,1]
+			f = self.students[sid] 
+			# features is all features scaled to 0,1
+			feat_vec = [self.scale(f[k], ranges[k]) for k in keys if k != y_feat]
+
+			# TO ONE HOT
+			class_vec = [0] * n_classes
+			class_vec[f[y_feat]] = 1
+
 			x += [feat_vec] 
 			y += [class_vec]
 
@@ -377,11 +503,12 @@ class DataProcessor(object):
 		'''
 		students = self.students
 		sn_0 = list(students.keys())[0]
-		row_headers = [h for h in students[sn_0]]
+		row_headers = [h for h in students[sn_0] if h not in self.classes]
 		row_headers.sort()
 		is_filtered = len(self.out_suff) != 0
 		headers = [] if is_filtered else ['student_num']
 		headers += row_headers
+		headers += self.classes # class should be last in arff
 
 		# add null cols
 		data = []
@@ -399,9 +526,13 @@ class DataProcessor(object):
 		out_fid = "features"
 		if is_filtered: out_fid = "filtered"
 		if fid: out_fid = fid
-
-		out_path = "{}/{}.arff".format(self.out_dir, out_fid)
+	
+		out_path = "{}/{}_{}.arff".format(self.out_dir, out_fid, self.dataset_name)
+		# write arff
+		if self.verbose:
+			print('Writing to {}'.format(out_path))
 		arff.dump( out_path, data, relation="pcrs", names = headers)
+		
 
 		# Cleanse .arff
 		f = open(out_path)
@@ -409,7 +540,18 @@ class DataProcessor(object):
 		f.close()
 		f = open(out_path, 'w')
 		for line in lines:
-			f.write(line.replace("'<NULL>'","?"))
+			# NOMINAL correct class attributes to nominal
+			if line[0] == '@' and "{" not in line:
+				parts = line.split()
+				for c in self.classes:
+					if c in parts:
+						cs = [str(e) for e in self.classes[c]]
+						parts[2] = "{"+", ".join(cs) + "}"
+				line = " ".join(parts)+"\n"
+	
+			if is_filtered:
+				line = line.replace("-1.0","?").replace("-1","?")
+			f.write(line)
 		f.close()
 
 	def load_args(self):

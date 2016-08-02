@@ -1,0 +1,6 @@
+python3 -c 
+"
+from data_util.processor import DataProcessor
+dp = DataProcessor({'arff_fid':None, 'n_assignments': None}); 
+dp.to_arff();
+"
