@@ -1,6 +1,7 @@
-import subprocess
+import subprocess, string
 import csv
 from multitron import train
+import numpy as np
 
 
 def get_subprocess_out( args ):
@@ -19,7 +20,6 @@ def get_dataset_name():
 	args = ['python3', '-c', 'from data_util.processor import get_dataset_name as gdn; print(gdn());']
 	return get_subprocess_out( args ).strip()
 
-
 def parse_acc( output ):
 	'''
 	output: multiline string output of running weka from command line
@@ -34,6 +34,28 @@ def parse_acc( output ):
 		if in_test_sec and len(parts) > 0 and parts[0] == "Correctly":
 			return float(parts[4])
 
+def parse_cm( output ):
+	'''
+	output: multiline string output of running weka from command line
+	return the confusion matrix as a 2d list
+	'''
+	in_cm_sec = 0
+	cm = []
+	for line in output.split('\n'):
+		parts = line.split()
+
+		if in_cm_sec == 3 and len(parts) > 0 and parts[0] != "a":
+			cm_end = parts.index('|')
+			cm += [[int(e) for e in parts[:cm_end]]]
+
+		if 'Confusion' in parts and 'Matrix' in parts:
+			in_cm_sec += 1 
+
+		if in_cm_sec >= 2 and len(parts) == 0:
+			in_cm_sec += 1 
+
+	return cm
+
 def run_weka(model, dataset_name):
 	args = [
 			'java',
@@ -41,31 +63,34 @@ def run_weka(model, dataset_name):
 			'/Applications/weka-3-8-0-oracle-jvm.app/Contents/Java/weka.jar',
 			'weka.classifiers.'+model,
 			'-t',
-			'out/filtered_{}.arff'.format(dataset_name),
-			'-split-percentage',
-			'70'
+			'out/filtered_{}_train.arff'.format(dataset_name),
+			'-T',
+			'out/filtered_{}_test.arff'.format(dataset_name)
 			]
 	out = get_subprocess_out( args )
 
-	return parse_acc( out )
+	return out
 
-def get_averages( fid ):
-	'''
-	calc averages for reach col in a csv
-	fid: csv file id
-	return a dict of { col_header : col_average, ... }
-	'''
-	totals = {}
+def read_csv( fid ):
+	data = {}
 	with open(fid, 'r') as csvfile:
 		reader = csv.DictReader(csvfile)
 		for row in reader:
 			for k in row:
-				if k not in totals: totals[k] = []
-				totals[k] += [float(row[k])]
+				if k not in data: data[k] = []
+				data[k] += [float(row[k])]
+
+	return data
+
+def get_averages( tabular ):
+	'''
+	calc averages for each col in a csv
+	return a dict of { col_header : col_average, ... }
+	'''
 
 	avgs = {}
-	for k in totals:
-		avgs[k] = sum(totals[k])/len(totals[k])
+	for k in list(tabular[0]):
+		avgs[k] = sum([row[k] for row in tabular])/len(tabular)
 	return avgs
 
 def display_md_table( data, headers=None ):
@@ -74,10 +99,11 @@ def display_md_table( data, headers=None ):
 	data: list of dicts
 	'''
 	# HEADERS
+
 	if headers == None:
 		headers = list(data[0])
 	h_str = " | ".join(headers)
-	print (h_str)
+	print(h_str)
 	print( "|".join(['---']*len(data[0])))
 	for row in data:
 		# format floats
@@ -85,11 +111,68 @@ def display_md_table( data, headers=None ):
 				for k in row}
 		print(" | ".join([str(row[h]) for h in headers]))
 
+def format_as_tabular( data, key_header, val_header ):
+	'''
+	*as tabular b/c this is the format csv module uses*
+	translate a dict of k:v pairs to a list of dicts with k,v as vals
+	data: in the form { key: val, ... }
+	return in the formL: [{key_header:key, val_header: val}, ]
+	'''
+	table_data = []
+	for a in data:
+		row = {}
+		row[key_header]=a
+		row[val_header]=data[a]
+		table_data+=[row]
+	return table_data
 
-def validate():
-	trials = [] 
+def format_cm_as_tabular( data ):
+	'''
+	format mxm confusion matrix as 
+	{a:val_1,b:val_2,...}
+	return tabular form
+	'''
+	lowers = string.ascii_lowercase
+	tabular_data = []
+	for d in data:
+		row = {}
+		for i in range(len(d)):
+			row[lowers[i]] = float(d[i])
+		tabular_data += [row]
 
-	for i in range(50):
+	return tabular_data
+
+
+def write_csv( csv_fid, data ):
+	with open(csv_fid , 'w') as csvfile:
+		fieldnames = list( data[0] )
+		writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+		writer.writeheader()
+		for e in data:
+			writer.writerow(e)
+
+def avg_cms( cms ):
+	'''
+	cms: {model_name: [set of confusion matrices], ...}
+	return {model_name: [average of confusion matrices], ...}
+	'''
+	avgs = {}
+	for m in cms:
+		a = np.array(cms[m])
+		a_flat = a.reshape(a.shape[0],4)
+
+		avg_flat = np.average(a_flat.T, axis=1)
+		avgs[m] = avg_flat.reshape(2,2)
+
+	return avgs
+
+def validate(n_trials):
+
+	accs = [] 
+	cms = {}  # confusion matrices
+	
+	for i in range(n_trials):
 		# Generate new data subset
 		args = ['python3','convert_data.py']
 		get_subprocess_out( args )
@@ -107,46 +190,38 @@ def validate():
 		acc = {}
 		args = ['python3', '-c', '"from data_util.processor import get_dataset_name as gdn; print(gdn())"']
 		dataset_name = get_dataset_name()
-		print('dataset',dataset_name)
 		for m in models:
-			acc[m] = run_weka(m, dataset_name)
+			out = run_weka(m, dataset_name)
+			acc[m] = parse_acc( out )
 
-		acc['multitron'] = train( dataset_name = dataset_name )*100
+			if m not in cms: cms[m] = []
+			cms[m] += [parse_cm( out )]
+
+		m = 'multitron'
+		acc[m], cm = train( dataset_name = dataset_name )
+		acc[m] *= 100
+		if m not in cms: cms[m] = []
+		cms[m] += [cm]
+
+		accs += [acc]
+
 		print(acc)
-		trials += [acc]
 
-		csv_fid = 'out/trials_{}.csv'.format( dataset_name )
-		# WRITE to csv
-		with open(csv_fid , 'w') as csvfile:
-			fieldnames = list( trials[0] )
-			writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+	csv_fid = 'out/trials_{}.csv'.format( dataset_name )
+	# WRITE to csv
+	write_csv( csv_fid, accs )
 
-			writer.writeheader()
-			for trial in trials:
-				writer.writerow(trial)
-
-		# AVERAGE
-		avgs = get_averages(csv_fid)
-
-def format_as_tabular( data, key_header, val_header ):
-	'''
-	translate a dict of k:v pairs to a list of dicts with k,v as vals
-	data: in the form { key: val, ... }
-	return in the formL: [{key_header:key, val_header: val}, ]
-	'''
-	table_data = []
-	for a in data:
-		row = {}
-		row[key_header]=a
-		row[val_header]=data[a]
-		table_data+=[row]
-	return table_data
+	return accs, cms
 
 if __name__ == '__main__':
-	validate()
+	accs, cms = validate(50)
 
-	dataset_name = get_dataset_name()
-	csv_fid = 'out/trials_{}.csv'.format( dataset_name )
-	avgs = get_averages(csv_fid)
+	# SHOW CMs
+	acms = avg_cms( cms )
+	for m in acms:
+		print('\n'+m)
+		display_md_table(format_cm_as_tabular(acms[m]))
+
+	avgs = get_averages( accs )
 	table_data = format_as_tabular( avgs, 'model', 'accuracy' ) 
-	display_md_table(table_data)
+	display_md_table( table_data )

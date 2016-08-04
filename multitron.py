@@ -2,28 +2,36 @@ import tensorflow as tf
 import numpy as np
 import json
 from sklearn.metrics import confusion_matrix
+from data_util.utils import get_dataset_name
 
 class BatchLoader:
-	def __init__(self, x, y, batch_size, train_ratio, verbose=False):
+	def __init__(self, train_set, test_set, batch_size, verbose=False):
 		self.batch_size = batch_size
 		self.train_ptr, self.test_ptr = [-1], [-1]
 
-		self.num_batches = num_batches = len(x)//batch_size
+		self.train_x = self.batchify(train_set['x'], batch_size)
+		self.train_y = self.batchify(train_set['y'], batch_size)
+		self.test_x = self.batchify(test_set['x'], batch_size)
+		self.test_y = self.batchify(test_set['y'], batch_size)
 
-		x = np.array(x[:num_batches*batch_size])
-		y = np.array(y[:num_batches*batch_size])
-
-		x_batches = np.split(x, num_batches)
-		y_batches = np.split(y, num_batches)
-
-		self.n_train = n_train = int(train_ratio * num_batches)
-
-		self.train_x, self.test_x = x_batches[:n_train], x_batches[n_train:]
-		self.train_y, self.test_y = y_batches[:n_train], y_batches[n_train:]
+		self.n_train = len(self.train_x)//2
+		self.n_test = len(self.test_x)//2
+		self.num_batches = self.n_train + self.n_test
 		
 		if verbose:
-			print("n train batches: {}, n test batches: {}".format(n_train, len(self.test_x)))
+			print("n train batches: {}, n test batches: {}".format(self.n_train, self.n_test))
 			print("feature dimensionality: {}".format(np.array(self.train_x).shape[-1]))
+
+	def batchify(self, data, batch_size):
+		'''
+		return (data*2).split_into_batches()
+		'''
+		double_data = np.array(data*2)
+		num_batches = len(double_data)//batch_size
+		abridged_data = np.array(double_data[:num_batches*batch_size])
+		batches = np.split(abridged_data, num_batches)
+		return batches
+		
 
 	def next_batch(self, ptr, x, y):
 		ptr[0] = (ptr[0] + 1) % len(x)
@@ -43,7 +51,7 @@ def build_confusion_matrix(bl, pred_max, y_max, x, y, keep_prob):
 	'''
 	y_true = []
 	y_pred = []
-	for i in range(len(bl.test_x)):
+	for i in range(bl.n_test):
 		batch_x, batch_y = bl.next_test()
 		y_pred += list(pred_max.eval({
 						x: batch_x, 
@@ -67,25 +75,27 @@ def display_confusion_matrix( cm ):
 
 def train( verbose = False, dataset_name = '201601' ):
 	#LOAD
-	with open('out/xy_{}.json'.format(dataset_name), 'r') as f:
-		data = json.load(f)
+	with open('out/xy_{}_train.json'.format(dataset_name), 'r') as f:
+		train_set = json.load(f)
 
+	with open('out/xy_{}_test.json'.format(dataset_name), 'r') as f:
+		test_set = json.load(f)
 
 	# MODEL
 	learning_rate = 0.001
 	training_epochs = 50
 	display_step = 5
-	train_ratio = 0.7 # ration of batches dedicated to training
 	batch_size = 4
 	dropout_rate = 0.75
 
-	bl = BatchLoader(data['x'], data['y'], batch_size, train_ratio, verbose)
+	# PREP BATCHES
+	bl = BatchLoader(train_set, test_set, batch_size, verbose)
 
 	# Network Parameters
 	n_hidden_1 = 60 # 1st layer number of features
 	n_hidden_2 = 60 # 2nd layer number of features
-	n_input = len(data['x'][0]) 
-	n_classes = len(data['y'][0]) 
+	n_input = len(train_set['x'][0]) 
+	n_classes = len(train_set['y'][0]) 
 	
 	# tf Graph input
 	x = tf.placeholder("float", [None, n_input])
@@ -179,16 +189,20 @@ def train( verbose = False, dataset_name = '201601' ):
 			display_confusion_matrix( cm )
 
 		# VALIDATE Accuracy
-		for i in range(len(bl.test_x)):
+		for i in range(bl.n_test):
 			batch_x, batch_y = bl.next_test()
 			total_accuracy += accuracy.eval({
 											x: batch_x, 
 											y: batch_y, 
 											keep_prob: 1.})
-		final_acc = total_accuracy / len(bl.test_x)
-		return final_acc
+		final_acc = total_accuracy / bl.n_test
+
+		return final_acc, cm
+
+
 if __name__ == "__main__":
-	
-	final_acc = train(True)
+
+	dataset_name = get_dataset_name()	
+	final_acc, cm  = train(True, dataset_name)
 	print("Final Accuracy: {}".format(final_acc) )
 

@@ -37,6 +37,8 @@ class DataProcessor(object):
 		self.perform_an = [82,55,49,54,48,41,47,35,36,37,45,39,59,64,56,62,42,61,63,57,58,91,67]
 		
 		self.students = {}
+		self.train = []
+		self.test = []
 		self.an_ts = {}  # assignment number timestamps 
 		self.an_cutoffs = {}
 		self.la_labels = [] # TODO make consistent la -> an
@@ -147,7 +149,7 @@ class DataProcessor(object):
 	def filter_attr( self , regex_list, mode='white'):
 		if self.verbose: 
 			print('filter attributes by {}list:'.format(mode))
-			print( regex_list )
+			print('\t'+ str(regex_list) )
 
 		self.out_suff += ['_filtered']
 		students = self.students
@@ -377,6 +379,18 @@ class DataProcessor(object):
 				print('loading assignment ' + a.number())
 			self.load_assignment(dataset, a)
 
+	def split_train_test(self, ratio = 0.7):
+		''' 
+		chooses a random selection of students to be used as train and test
+		according to ratio
+		where ratio*len(students) are used for training
+		'''
+		split = int(ratio*len(self.students))
+		sids = list(self.students)
+		random.shuffle(sids)
+		self.train = sids[:split]
+		self.test = sids[split:]
+
 	def equalize_by_class(self, c):
 		'''
 		c: the class to equalize by
@@ -404,13 +418,31 @@ class DataProcessor(object):
 			for sid in subsets[v][:min_count]:
 				equalized[sid] = self.students[sid]
 		if self.verbose:
-			print("Equalized by class {}, {} kept per class.".format(c, min_count))
+			print("equalized by class {}, {} kept per class:".format(c, min_count))
 		n_filtered = len(self.students) - len(equalized)
 		n_kept = len(equalized)
 		if self.verbose:
-			print("\t{} filtered, {} kept total.".format(n_filtered, n_kept))
+			print("\t{} filtered, {} kept".format(n_filtered, n_kept))
 
 		self.students = equalized
+
+	def oversample(self, feature, value, mult ):
+		'''
+		feature: key of a feature of students
+		value: seeked value of feature
+		mult: int, number of times to replicate
+		duplicate data points with feature with a val of value, with a new key
+		by mult
+		'''
+		count = 0
+		for sid in list(self.students):
+			f = self.students[sid]
+			if f[feature] == value:
+				for i in range( mult-1 ):
+					count += 1 		# count n new samples created
+					self.students[int(str(sid)+str(i))] = f
+
+		print('oversampled {} samples for {}:{}, ({}x)'.format(count, feature, value, mult)) 
 	
 	def get_ranges(self):
 		'''
@@ -462,7 +494,7 @@ class DataProcessor(object):
 
 		keys_info = 'All' if not keys else keys
 		if self.verbose:
-			print('filter null students for {},'.format(keys_info))
+			print('filter students with null val for {}:'.format(keys_info))
 			print('\t{} filtered, {} kept'.format(len(filtered), len(unfiltered)))
 
 		self.students = unfiltered
@@ -470,17 +502,23 @@ class DataProcessor(object):
 	def to_xy(self,y_feat,out_path):
 		'''
 		y_feat = the feature to use as the class vec
-		Return students data as x,y vectors
+		dump students data as x,y vectors
 		x: features
 		y: class
 		'''
-		x = []
-		y = []
-		# a single set of keys to maintain order
+
+		data = {'x':[],'y':[]}
+		train_set = {'x':[],'y':[]}
+		test_set = {'x':[],'y':[]}
+		# a master set of keys to maintain order
 		keys = self.students[list(self.students)[0]].keys() 
 
 		ranges = self.get_ranges()
 		n_classes = len(self.classes[y_feat])
+
+		# split train and test if not done
+		if (len(self.train)==0 and len(self.test) == 0):
+			self.split_train_test()
 
 		for sid in self.students:
 			f = self.students[sid] 
@@ -491,11 +529,25 @@ class DataProcessor(object):
 			class_vec = [0] * n_classes
 			class_vec[f[y_feat]] = 1
 
-			x += [feat_vec] 
-			y += [class_vec]
+			data['x'] += [feat_vec] 
+			data['y'] += [class_vec]
 
-		with open(out_path,'w') as f:
-			json.dump({'x':x,'y':y}, f)
+			if sid in self.train:
+				train_set['x'] += [feat_vec] 
+				train_set['y'] += [class_vec]
+
+			if sid in self.test:
+				test_set['x'] += [feat_vec] 
+				test_set['y'] += [class_vec]
+
+		with open(out_path+'.json','w') as f:
+			json.dump(data, f)
+
+		with open(out_path+'_train.json','w') as f:
+			json.dump(train_set, f)
+
+		with open(out_path+'_test.json','w') as f:
+			json.dump(test_set, f)
 		
 	def to_arff(self, fid=None):
 		'''
@@ -510,8 +562,14 @@ class DataProcessor(object):
 		headers += row_headers
 		headers += self.classes # class should be last in arff
 
+		# split train and test if not done
+		if (len(self.train)==0 and len(self.test) == 0):
+			self.split_train_test()
+
 		# add null cols
 		data = []
+		test_set = []
+		train_set = []
 		file_headers = headers if is_filtered else row_headers
 		for sn in students:
 			row = [] if is_filtered else [sn]
@@ -522,23 +580,42 @@ class DataProcessor(object):
 					else: students[sn][h] = self.null_int
 				row += [students[sn][h]]
 			data += [row]
+			if sn in self.train: train_set += [row]
+			if sn in self.test: test_set += [row]
+
 
 		out_fid = "features"
 		if is_filtered: out_fid = "filtered"
 		if fid: out_fid = fid
 	
+		# write all data
 		out_path = "{}/{}_{}.arff".format(self.out_dir, out_fid, self.dataset_name)
-		# write arff
 		if self.verbose:
 			print('Writing to {}'.format(out_path))
 		arff.dump( out_path, data, relation="pcrs", names = headers)
-		
+		self.cleanse_arff( out_path, is_filtered )	
 
+		# write train
+		out_path = "{}/{}_{}_train.arff".format(self.out_dir, out_fid, self.dataset_name)
+		if self.verbose:
+			print('Writing to {}'.format(out_path))
+		arff.dump( out_path, train_set, relation="pcrs", names = headers)
+		self.cleanse_arff( out_path, is_filtered )	
+		
+		# write test
+		out_path = "{}/{}_{}_test.arff".format(self.out_dir, out_fid, self.dataset_name)
+		if self.verbose:
+			print('Writing to {}'.format(out_path))
+		arff.dump( out_path, test_set, relation="pcrs", names = headers)
+		self.cleanse_arff( out_path, is_filtered )	
+
+
+	def cleanse_arff( self, path, is_filtered ):
 		# Cleanse .arff
-		f = open(out_path)
+		f = open(path)
 		lines = f.readlines()
 		f.close()
-		f = open(out_path, 'w')
+		f = open(path, 'w')
 		for line in lines:
 			# NOMINAL correct class attributes to nominal
 			if line[0] == '@' and "{" not in line:
