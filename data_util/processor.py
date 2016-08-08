@@ -103,6 +103,31 @@ class DataProcessor(object):
 				del stats[bk]
 			self.students[sn] = stats
 
+	def feature_dist(self, feature ):
+		'''
+		return the distribution for all values of a feature asa a dict
+		'''
+		counts = self.feature_count( feature )
+		total = float(sum(counts.values()))
+		return {k:v/total for k,v in counts.items()}
+
+	def feature_count(self, feature ):
+		'''
+		return the count for all values of a feauture as a dict
+		dist = {val_1: count_1, ...}
+		'''
+		dist = {}
+		for sn in self.students:
+			s = self.students[sn]
+			if feature not in s:
+				raise Exception('{} not present in all students'.format(feature))
+			val = s[feature]
+			if val not in dist: dist[val] = 0 
+			dist[val] += 1
+
+		return dist
+
+
 	def compile_regexes( self, regexes ):
 		# if given a list, return a list of attributes matching the regexes
 		# if given a dict, return a dict with attrs as keys matching the regexes
@@ -145,6 +170,27 @@ class DataProcessor(object):
 		sn_0 = list(students.keys())[0]
 		return list(students[sn_0].keys())
 
+	def rename_assign_chron(self):
+		if self.verbose:
+			print('rename assignments chronologically');
+
+		studs = self.students
+		an_cuts = self.an_cutoffs
+		cuts_an = {v: k for k, v in an_cuts.items()}
+		cuts = list(cuts_an)
+		cuts.sort()
+		an_new_name = {int(cuts_an[c]):i for i,c in enumerate(cuts)}
+
+		for sn in studs:
+			feats = studs[sn]
+			for label in list(feats):
+				if 'la' == label[:2]:
+					an = int(label[2:label.index('_')])
+
+					suff = label[label.index('_'):]
+					new_label = "la{}{}".format(an_new_name[an], suff)
+					feats[new_label] = feats[label]
+					del studs[sn][label]
 
 	def filter_attr( self , regex_list, mode='white'):
 		if self.verbose: 
@@ -163,6 +209,33 @@ class DataProcessor(object):
 			for attr in filter_list:
 				if attr in students[sn]:
 					del students[sn][attr]
+
+	def filter_first_n_chron( self, n, wl=True ):
+		'''
+		filter first n assignments chronologically
+		'''
+		self.out_suff += ['_filtered']
+		studs = self.students
+		an_cuts = self.an_cutoffs
+		cuts_an = {v: k for k, v in an_cuts.items()}
+		cuts = list(cuts_an)
+		cuts.sort()
+		filtered = [cuts_an[c] for c in cuts[n:]]
+		n_f = len(filtered)
+		n_k = len(an_cuts) - n_f
+
+		if self.verbose: 
+			ft = "whitelist" if wl else "blacklist" # filter type
+			print("filter first {} assignments by {} chronologically".format(n,ft))
+			print("\t"+ str(n_f) +" filtered, "+str(n_k)+" kept")
+
+		# filter assignments with an in filter
+		for an in filtered:
+			for sn in studs:
+				for label in self.la_labels:
+					la = label.format(str(an))
+					if la in studs[sn]:
+						del studs[sn][la]
 
 	def filter_by_date( self, cutoff ):
 		self.out_suff += ['_filtered']
@@ -390,6 +463,8 @@ class DataProcessor(object):
 		random.shuffle(sids)
 		self.train = sids[:split]
 		self.test = sids[split:]
+		if self.verbose:
+			print('split train ratio: {}, {}:{}'.format(ratio, len(self.train), len(self.test)))
 
 	def equalize_by_class(self, c):
 		'''
@@ -426,6 +501,25 @@ class DataProcessor(object):
 
 		self.students = equalized
 
+	def undersample(self, feature, value, drop_rate ):
+		'''
+		feature: key of a feature of students
+		value: seeked value of feature
+		drop_rate: float (0,1)
+		drop drop_rate * len(self.students) student with f[feat] == val
+		(f is the feature set for a student)
+		'''
+		
+		studs = self.students
+
+		total_sample = [sn for sn in studs if studs[sn][feature]==value]
+		dropped = total_sample[:int(drop_rate*len(total_sample))]
+
+		self.students = {sn:studs[sn] for sn in studs if sn not in dropped}
+
+		if self.verbose:
+			print('dropped {} samples for {}:{}, rate={}'.format(len(dropped), feature, value, drop_rate)) 
+
 	def oversample(self, feature, value, mult ):
 		'''
 		feature: key of a feature of students
@@ -441,8 +535,8 @@ class DataProcessor(object):
 				for i in range( mult-1 ):
 					count += 1 		# count n new samples created
 					self.students[int(str(sid)+str(i))] = f
-
-		print('oversampled {} samples for {}:{}, ({}x)'.format(count, feature, value, mult)) 
+		if self.verbose:
+			print('oversampled {} samples for {}:{}, ({}x)'.format(count, feature, value, mult)) 
 	
 	def get_ranges(self):
 		'''
@@ -475,16 +569,16 @@ class DataProcessor(object):
 		keys: [list of attributes to check for null]
 				check all if None
 		'''
-		filtered = []
+		filtered = {}
 
 		# mark students for filtering
 		for sid in self.students:
 			feats = self.students[sid]
 			for label in feats:
-				feat = feats[label]
+				feat = int(feats[label])
 				if not keys or label in keys:
 					if feat == -1:
-						filtered += [sid]
+						filtered[sid]=None
 
 		# CREATE subset of unfiltered students		
 		unfiltered = {}
@@ -590,21 +684,21 @@ class DataProcessor(object):
 	
 		# write all data
 		out_path = "{}/{}_{}.arff".format(self.out_dir, out_fid, self.dataset_name)
-		if self.verbose:
+		if self.verbose and 0:
 			print('Writing to {}'.format(out_path))
 		arff.dump( out_path, data, relation="pcrs", names = headers)
 		self.cleanse_arff( out_path, is_filtered )	
 
 		# write train
 		out_path = "{}/{}_{}_train.arff".format(self.out_dir, out_fid, self.dataset_name)
-		if self.verbose:
+		if self.verbose and 0:
 			print('Writing to {}'.format(out_path))
 		arff.dump( out_path, train_set, relation="pcrs", names = headers)
 		self.cleanse_arff( out_path, is_filtered )	
 		
 		# write test
 		out_path = "{}/{}_{}_test.arff".format(self.out_dir, out_fid, self.dataset_name)
-		if self.verbose:
+		if self.verbose and 0:
 			print('Writing to {}'.format(out_path))
 		arff.dump( out_path, test_set, relation="pcrs", names = headers)
 		self.cleanse_arff( out_path, is_filtered )	

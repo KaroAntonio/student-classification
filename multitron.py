@@ -72,13 +72,14 @@ def display_confusion_matrix( cm ):
 	print("Confusion Matrix")	
 	print( cm )
 
+def train( train_dataset, test_dataset=None, verbose = False ):
+	if not test_dataset: test_dataset = train_dataset
 
-def train( verbose = False, dataset_name = '201601' ):
 	#LOAD
-	with open('out/xy_{}_train.json'.format(dataset_name), 'r') as f:
+	with open('out/xy_{}_train.json'.format(train_dataset), 'r') as f:
 		train_set = json.load(f)
 
-	with open('out/xy_{}_test.json'.format(dataset_name), 'r') as f:
+	with open('out/xy_{}_test.json'.format(test_dataset), 'r') as f:
 		test_set = json.load(f)
 
 	# MODEL
@@ -203,6 +204,6 @@ def train( verbose = False, dataset_name = '201601' ):
 if __name__ == "__main__":
 
 	dataset_name = get_dataset_name()	
-	final_acc, cm  = train(True, dataset_name)
+	final_acc, cm  = train( dataset_name, True )
 	print("Final Accuracy: {}".format(final_acc) )
 
