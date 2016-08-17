@@ -2,7 +2,7 @@ import subprocess, string, sys
 import csv
 from multitron import train
 import numpy as np
-
+from scipy import stats
 
 def run_subprocess( args ):
 	'''
@@ -71,7 +71,9 @@ def run_weka(model, train_dataset, test_dataset=None):
 			'out/filtered_{}_test.arff'.format(test_dataset)
 			]
 	out, err = run_subprocess( args )
-
+	if err: 
+		print(err)
+		raise Exception('Weka Err')
 	return out
 
 def read_csv( fid ):
@@ -84,6 +86,21 @@ def read_csv( fid ):
 				data[k] += [float(row[k])]
 
 	return data
+
+def get_mean_err( accs ):
+	'''
+	return the mean with +- err
+	'''
+
+	merrs = {} # mus / means
+	for m in list(tabular[0]):
+		a = np.array([row[m] for row in tabular])
+		mu, sigma = a.mean(), a.std()
+		ci = stats.norm.interval(0.95, loc=mu, scale=sigma) 
+		cirs = (ci[1] - ci[0])/2
+		merrs[m] = "{:.2f}{}{:.2f}".format(mu,"+/-",cirs)
+
+	return merrs
 
 def get_averages( tabular ):
 	'''
@@ -111,7 +128,7 @@ def display_md_table( data, headers=None ):
 	print( "|".join(['---']*len(data[0])))
 	for row in data:
 		# format floats
-		row = {k:"{:.2f}".format(row[k]) if type(row[k])==float else row[k] 
+		row = {k:"{:.2f}".format(row[k]) if type(row[k])!=str else row[k] 
 				for k in row}
 		print(" | ".join([str(row[h]) for h in headers]))
 
@@ -170,8 +187,9 @@ def avg_cms( cms ):
 
 	return avgs
 
+
 def show_context_info():
-	args = ['python3','convert_data.py']
+	args = ['python3','filter.py']
 	print(run_subprocess( args )[0])
 
 def validate(n_trials, train_dataset, test_dataset=None):
@@ -182,26 +200,26 @@ def validate(n_trials, train_dataset, test_dataset=None):
 	cms = {}  # confusion matrices
 
 	for i in range(n_trials):
-		end = ("\n" if i==n_trials-1 else"")
-		print "trial {}/{}\r".format(i+1,n_trials)+end,
-		sys.stdout.flush()
 
 		# Generate new data subset
-		args = ['python3','convert_data.py']
+		args = ['python3','filter.py']
 		run_subprocess( args )
 
 		# Validate Models (percentage-split: 70%)
 		models = [
 				'trees.RandomForest',
-				'trees.J48',
+				'trees.J48',			# only nominal
 				'trees.DecisionStump',
-				'bayes.NaiveBayes',
-				'bayes.BayesNet',
+				'bayes.NaiveBayes',    # only nominal
+				#'bayes.BayesNet',		# only nominal
 				'rules.DecisionTable',
 				'rules.PART'
 				]
 		acc = {}
 		for m in models:
+			end = ("\n" if i==n_trials-1 else "")
+			print "trial {}/{}\t{}".format(i+1,n_trials,m)+(" "*10)+"\r"+end,
+			sys.stdout.flush()
 			out = run_weka(m, train_dataset, test_dataset)
 			acc[m] = parse_acc( out )
 
@@ -239,13 +257,22 @@ def write_text_to_file(text, fid):
 
 if __name__ == '__main__':
 
+	#train_dataset = '201601'
+	#train_dataset = '201509'
+	#test_dataset = '201601'
+	#test_dataset = '201509'
 
-	train_dataset = '201509'
-	test_dataset = '201601'
+	train_dataset = 's2014'
+	#train_dataset = 'k2015'
+	test_dataset = 's2014'
+	#test_dataset = 'k2015'
+
 	print('train: {}, test: {}'.format(train_dataset, test_dataset))
 	show_context_info()
 
 	write_text_to_file(train_dataset, 'data_util/dataset_name.txt')
+
+	# VALIDATE
 	accs, cms = validate(50, train_dataset, test_dataset)
 	
 	# CONFUSE
@@ -258,6 +285,10 @@ if __name__ == '__main__':
 		avg_pass_accs[m] = avg_pass_acc(acms[m])
 		tabular = format_cm_as_tabular(acms[m])
 		display_md_table(tabular)
+
+	# TODO Err bars
+	# broken
+	# mean_err_accs = get_mean_err( accs )
 
 	avg_accs = get_averages( accs )
 	tabular = format_as_tabular( avg_accs, 'model', 'accuracy' ) 

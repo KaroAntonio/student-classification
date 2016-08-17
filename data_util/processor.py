@@ -10,6 +10,7 @@ import re
 # import traceback
 import subprocess
 from datetime import datetime as dt
+import numpy as np
 
 import progsnap
 from helpers import *
@@ -35,6 +36,7 @@ class DataProcessor(object):
 		self.prepare_an = []
 		self.rehearse_an = [87,131,43,88,92]
 		self.perform_an = [82,55,49,54,48,41,47,35,36,37,45,39,59,64,56,62,42,61,63,57,58,91,67]
+		self.common_an = [41, 47, 48, 49, 50, 52, 54, 55, 82, 83, 84] # for both 2016 and 201509
 		
 		self.students = {}
 		self.train = []
@@ -50,9 +52,13 @@ class DataProcessor(object):
 
 		if self.arff_fid:
 			self.load_arff()
-		else:
+		elif self.progsnap_dir:
 			self.load_progsnap()
 			self.load_grades()
+		elif self.csv_fid:
+			self.load_csv()
+		else:
+			raise Exception('Specify load source: arff_fid/csv_fid/progsnap_dir')
 
 		self.process()
 
@@ -61,17 +67,22 @@ class DataProcessor(object):
 		LOAD data config
 		use defaults as needed
 		'''
-		dataset_name = get_dataset_name()
+		if 'dataset_name' in config:
+			dataset_name = config['dataset_name']
+		else:
+			dataset_name = get_dataset_name()
 		# TODO ... is this a good place to put this?
 		defaults = {
 			'dataset_name':dataset_name,
             'grades_fid':'data/'+dataset_name+'/grades.csv',
             'totals_fid':'data/'+dataset_name+'/totals.csv',
+            'csv_fid':None,
             'arff_fid': None,   # None to load from progsnap
+            'progsnap_dir':None,   #
             'out_dir':'out',
-            'progsnap_dir':'data/'+dataset_name+'/progsnap_data',
             'n_assignments':None,  # None for all
 			'verbose':True,
+			'nominal':True,
             }
 		
 		# replace defaults with given config
@@ -85,6 +96,26 @@ class DataProcessor(object):
 			val = defaults[k]
 			val = '"{}"'.format(val) if type(val) == str else val
 			exec('self.{} = {}'.format(k,val))
+
+	def load_csv(self):
+		'''
+		for loading from the cleaned up ahadi data csv file
+		'''
+		if self.verbose: 
+			print("Loading from csv: {}".format(self.csv_fid))
+		with open(self.csv_fid,'r') as csvfile:
+			reader = csv.DictReader(csvfile)
+			
+			for row in reader:
+				# set ts for assignments
+				sn = row['id']
+				del row['id']
+				for k in row:
+					try: row[k] = int(row[k])
+					except: pass
+					try: row[k] = float(row[k])
+					except: pass
+				self.students[sn] = row
 
 	def load_arff(self):
 		if self.verbose: 
@@ -103,6 +134,29 @@ class DataProcessor(object):
 				del stats[bk]
 			self.students[sn] = stats
 
+	def disp_feat_stats(self, feat ):
+		feats = self.compile_regexes([feat])
+		print("{} stats".format(feats))
+		stats = self.feats_stats(feats)
+		for stat in stats:
+			print("\t{}: {:.2f}".format(stat,stats[stat]))
+
+	def feats_stats(self, feats ):
+		''''
+		feats: a list of feats
+		return a dict with stats for feature, feature may be a regex
+		avg, mean, std dev
+		'''
+		a = []	
+		for feat in feats:
+			a += [np.array([self.students[sn][feat] for sn in self.students])]
+		a = np.array(a)
+		return {
+				'mu':a.mean(),
+				'sigma':a.std(),
+				'median':np.median(a)
+				}
+
 	def feature_dist(self, feature ):
 		'''
 		return the distribution for all values of a feature asa a dict
@@ -110,6 +164,13 @@ class DataProcessor(object):
 		counts = self.feature_count( feature )
 		total = float(sum(counts.values()))
 		return {k:v/total for k,v in counts.items()}
+
+	def n_features( self ):
+		'''
+		return the number of features in the dataset
+		'''
+		sn0 = list(self.students)[0]
+		return len(self.students[sn0])
 
 	def feature_count(self, feature ):
 		'''
@@ -126,7 +187,6 @@ class DataProcessor(object):
 			dist[val] += 1
 
 		return dist
-
 
 	def compile_regexes( self, regexes ):
 		# if given a list, return a list of attributes matching the regexes
@@ -145,6 +205,30 @@ class DataProcessor(object):
 					else: compiled[attr] = regexes[r]
 
 		return compiled 
+
+	def filter_not_common( self ):
+		'''
+		filter attributes not shared among all datasets
+		(according to self.common)
+		'''
+		if self.verbose: 
+			print("filter common assignments by whitelist:")
+			print(self.common_an)
+		self.out_suff += ['_filtered']
+		
+		studs = self.students
+		removed = []
+		for sn in studs:
+			feats = studs[sn]
+			for feat in list(feats):
+				if '_' in feat: f = feat.index('_')
+				if feat[0:2] == 'la' and int(feat[2:f]) not in self.common_an:
+					del feats[feat]
+					if feat[2:f] not in removed:
+						removed += [feat[2:f]]
+		if self.verbose: 
+			print('{} assignments removed:'.format(len(removed)))
+			print('\t'+ str(removed) )
 
 	def filter_students_by_attr( self, regex_dict ):
 		# filter students if the k matches v in regerx_dict
@@ -224,11 +308,6 @@ class DataProcessor(object):
 		n_f = len(filtered)
 		n_k = len(an_cuts) - n_f
 
-		if self.verbose: 
-			ft = "whitelist" if wl else "blacklist" # filter type
-			print("filter first {} assignments by {} chronologically".format(n,ft))
-			print("\t"+ str(n_f) +" filtered, "+str(n_k)+" kept")
-
 		# filter assignments with an in filter
 		for an in filtered:
 			for sn in studs:
@@ -236,6 +315,11 @@ class DataProcessor(object):
 					la = label.format(str(an))
 					if la in studs[sn]:
 						del studs[sn][la]
+
+		if self.verbose: 
+			ft = "whitelist" if wl else "blacklist" # filter type
+			print("filter first {} assignments by {} chronologically".format(n,ft))
+			print("\t"+ str(n_f) +" filtered, "+str(n_k)+" kept")
 
 	def filter_by_date( self, cutoff ):
 		self.out_suff += ['_filtered']
@@ -312,7 +396,8 @@ class DataProcessor(object):
 		for sn in self.students:
 			for attr in self.students[sn]:
 				if '_ts' in attr:
-					an = attr[2:4]
+					f = attr.index('_')
+					an = attr[2:f]
 					ts = self.students[sn][attr]
 					self.track_an_ts(an,ts)
 
@@ -333,6 +418,19 @@ class DataProcessor(object):
 			print(cut[0], dt.fromtimestamp(cut[1]/1e3))
 		print("-"*10)
 
+	def get_ans(self):
+		'''
+		return a list of assignment numbers
+		'''
+
+		studs = self.students
+		ans = []
+		for attr in list(studs[list(studs)[0]]):
+			if '_' in attr: f = attr.index('_')
+			if attr[0:2] == 'la' and attr[2:f] not in ans:
+				ans += [attr[2:f]]
+		ans.sort()
+		return ans
 
 	def load_progsnap(self):
 
@@ -392,6 +490,7 @@ class DataProcessor(object):
 		sn = wh.student_num()
 		an = wh.assign_num()
 		max_ts = 0
+		min_ts = 0
 		reps = {'last':None} # a dict of repeated statuses
 		last = {}  # a dict of if the last event was repeated
 
@@ -402,9 +501,11 @@ class DataProcessor(object):
 				features['numtests'] = tr.numtests()
 				features['numpassed'] = tr.numpassed()
 				features['correctness'] = features['numpassed'] / features['numtests']
+				if not max_ts: min_ts = tr.ts() 
 				if tr.ts() < max_ts:
 					raise Exception('events unordered')
 				else: max_ts = tr.ts()
+
 				for status in tr.statuses():
 					if status in features:
 						features[status] += 1
@@ -418,6 +519,7 @@ class DataProcessor(object):
 		if sn not in self.students: self.students[sn] = {}
 		# stats for each lab assignment
 		label_stats = { 
+				'la{}_t':max_ts-min_ts,
 				'la{}_s':num_evts, 
 				'la{}_c':features['correctness'],
 				'la{}_ts':max_ts,
@@ -460,7 +562,8 @@ class DataProcessor(object):
 		'''
 		split = int(ratio*len(self.students))
 		sids = list(self.students)
-		random.shuffle(sids)
+		#sids.sort()	
+		random.shuffle(sids) # its better for this to be random
 		self.train = sids[:split]
 		self.test = sids[split:]
 		if self.verbose:
@@ -605,7 +708,8 @@ class DataProcessor(object):
 		train_set = {'x':[],'y':[]}
 		test_set = {'x':[],'y':[]}
 		# a master set of keys to maintain order
-		keys = self.students[list(self.students)[0]].keys() 
+		keys = list(self.students[list(self.students)[0]].keys())
+		keys.sort()
 
 		ranges = self.get_ranges()
 		n_classes = len(self.classes[y_feat])
@@ -618,7 +722,6 @@ class DataProcessor(object):
 			f = self.students[sid] 
 			# features is all features scaled to 0,1
 			feat_vec = [self.scale(f[k], ranges[k]) for k in keys if k != y_feat]
-
 			# TO ONE HOT
 			class_vec = [0] * n_classes
 			class_vec[f[y_feat]] = 1
@@ -633,15 +736,16 @@ class DataProcessor(object):
 			if sid in self.test:
 				test_set['x'] += [feat_vec] 
 				test_set['y'] += [class_vec]
-
+		
 		with open(out_path+'.json','w') as f:
 			json.dump(data, f)
+		
+		if self.arff_fid != None:
+			with open(out_path+'_train.json','w') as f:
+				json.dump(train_set, f)
 
-		with open(out_path+'_train.json','w') as f:
-			json.dump(train_set, f)
-
-		with open(out_path+'_test.json','w') as f:
-			json.dump(test_set, f)
+			with open(out_path+'_test.json','w') as f:
+				json.dump(test_set, f)
 		
 	def to_arff(self, fid=None):
 		'''
@@ -688,20 +792,21 @@ class DataProcessor(object):
 			print('Writing to {}'.format(out_path))
 		arff.dump( out_path, data, relation="pcrs", names = headers)
 		self.cleanse_arff( out_path, is_filtered )	
-
-		# write train
-		out_path = "{}/{}_{}_train.arff".format(self.out_dir, out_fid, self.dataset_name)
-		if self.verbose and 0:
-			print('Writing to {}'.format(out_path))
-		arff.dump( out_path, train_set, relation="pcrs", names = headers)
-		self.cleanse_arff( out_path, is_filtered )	
 		
-		# write test
-		out_path = "{}/{}_{}_test.arff".format(self.out_dir, out_fid, self.dataset_name)
-		if self.verbose and 0:
-			print('Writing to {}'.format(out_path))
-		arff.dump( out_path, test_set, relation="pcrs", names = headers)
-		self.cleanse_arff( out_path, is_filtered )	
+		if self.arff_fid != None:
+			# write train
+			out_path = "{}/{}_{}_train.arff".format(self.out_dir, out_fid, self.dataset_name)
+			if self.verbose and 0:
+				print('Writing to {}'.format(out_path))
+			arff.dump( out_path, train_set, relation="pcrs", names = headers)
+			self.cleanse_arff( out_path, is_filtered )	
+			
+			# write test
+			out_path = "{}/{}_{}_test.arff".format(self.out_dir, out_fid, self.dataset_name)
+			if self.verbose and 0:
+				print('Writing to {}'.format(out_path))
+			arff.dump( out_path, test_set, relation="pcrs", names = headers)
+			self.cleanse_arff( out_path, is_filtered )	
 
 
 	def cleanse_arff( self, path, is_filtered ):
@@ -711,17 +816,19 @@ class DataProcessor(object):
 		f.close()
 		f = open(path, 'w')
 		for line in lines:
-			# NOMINAL correct class attributes to nominal
-			if line[0] == '@' and "{" not in line:
-				parts = line.split()
-				for c in self.classes:
-					if c in parts:
-						cs = [str(e) for e in self.classes[c]]
-						parts[2] = "{"+", ".join(cs) + "}"
-				line = " ".join(parts)+"\n"
+			if self.nominal:
+				# NOMINAL correct class attributes to nominal
+				if line[0] == '@' and "{" not in line:
+					parts = line.split()
+					for c in self.classes:
+						if c in parts:
+							cs = [str(e) for e in self.classes[c]]
+							parts[2] = "{"+", ".join(cs) + "}"
+					line = " ".join(parts)+"\n"
 	
 			if is_filtered:
-				line = line.replace("-1.0","?").replace("-1","?")
+				#line = line.replace("-1.0","?").replace("-1","?")
+				pass
 			f.write(line)
 		f.close()
 

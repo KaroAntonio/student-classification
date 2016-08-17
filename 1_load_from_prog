@@ -1,0 +1,15 @@
+python3 -c "
+from data_util.processor import DataProcessor
+dn = '201509'
+progsnap_dir = 'data/{}/progsnap_data'.format(dn)
+dp = DataProcessor({'dataset_name':dn, 'progsnap_dir':progsnap_dir, 'n_assignments': None}); 
+dp.to_arff();
+"
+
+python3 -c "
+from data_util.processor import DataProcessor
+dn = '201601'
+progsnap_dir = 'data/{}/progsnap_data'.format(dn)
+dp = DataProcessor({'dataset_name':dn, 'progsnap_dir':progsnap_dir, 'n_assignments': None}); 
+dp.to_arff();
+"

@@ -1,3 +1,5 @@
 data/*/progsnap_data/*
 data/*/progsnap_data/code_data.csv
+data/*.tar.gz
+data/*/*.tsv
 out/

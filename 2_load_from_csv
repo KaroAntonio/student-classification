@@ -1,0 +1,15 @@
+python3 -c "
+from data_util.processor import DataProcessor
+dn = 's2014'
+csv_fid = 'data/{}/features.csv'.format(dn)
+dp = DataProcessor({'dataset_name':dn, 'csv_fid':csv_fid, 'n_assignments': None}); 
+dp.to_arff();
+"
+
+python3 -c "
+from data_util.processor import DataProcessor
+dn = 'k2015'
+csv_fid = 'data/{}/features.csv'.format(dn)
+dp = DataProcessor({'dataset_name':dn, 'csv_fid':csv_fid, 'n_assignments': None}); 
+dp.to_arff();
+"

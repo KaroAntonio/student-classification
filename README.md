@@ -4,6 +4,7 @@ reproducing jadud et al's machine learning student classification study with dat
 
 ### Dependencies
 * numpy
+* scipy
 * sklearn
 * tensorflow
 * WEKA

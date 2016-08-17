@@ -93,8 +93,8 @@ def train( train_dataset, test_dataset=None, verbose = False ):
 	bl = BatchLoader(train_set, test_set, batch_size, verbose)
 
 	# Network Parameters
-	n_hidden_1 = 60 # 1st layer number of features
-	n_hidden_2 = 60 # 2nd layer number of features
+	n_hidden_1 = 200 # 1st layer number of features
+	n_hidden_2 = 200 # 2nd layer number of features
 	n_input = len(train_set['x'][0]) 
 	n_classes = len(train_set['y'][0]) 
 	
